@@ -14,7 +14,7 @@ name: CD
 
 on:
   push:
-    branches: [devel, stage]
+    branches: [devel, stage, master]
   workflow_dispatch:
 
 permissions:
