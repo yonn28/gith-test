@@ -1,11 +1,6 @@
 name: CI Pipeline
 
 on:
-  push:
-    branches:
-      - main
-      - devel
-      - stage
   pull_request:
     branches:
       - main

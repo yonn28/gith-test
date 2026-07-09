@@ -21,8 +21,8 @@ permissions:
   contents: read
 
 env:
-  APP_DIR: codebase/rdicidr-0.1.0
-  TF_DIR: codebase/rdicidr-0.1.0/terraform
+  APP_DIR: .
+  TF_DIR: terraform
   # Terraform backend + provider auth
   ARM_CLIENT_ID: ${{ secrets.ARM_CLIENT_ID }}
   ARM_CLIENT_SECRET: ${{ secrets.ARM_CLIENT_SECRET }}
@@ -49,7 +49,7 @@ jobs:
         with:
           node-version: '15.5.1'
           cache: npm
-          cache-dependency-path: codebase/rdicidr-0.1.0/package-lock.json
+          cache-dependency-path: package-lock.json
 
       - name: Install dependencies
         working-directory: ${{ env.APP_DIR }}
