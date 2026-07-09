@@ -1,0 +1,137 @@
+# =============================================================================
+# CD — deploys on every merge (push) to devel or stage.
+# Branch name == Terraform environment (devel.tfvars / stage.tfvars).
+#
+# Flow: build app -> terraform apply (remote state per env) ->
+#       upload build/ to $web -> purge CDN cache.
+#
+# Required repository secrets:
+#   ARM_CLIENT_ID, ARM_CLIENT_SECRET, ARM_TENANT_ID, ARM_SUBSCRIPTION_ID
+#   AZURE_CREDENTIALS        (JSON for azure/login)
+#   TFSTATE_STORAGE_ACCOUNT  (bootstrap storage account for terraform state)
+# =============================================================================
+name: CD
+
+on:
+  push:
+    branches: [devel, stage, master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  APP_DIR: .
+  TF_DIR: terraform
+  # Terraform backend + provider auth
+  ARM_CLIENT_ID: ${{ secrets.ARM_CLIENT_ID }}
+  ARM_CLIENT_SECRET: ${{ secrets.ARM_CLIENT_SECRET }}
+  ARM_TENANT_ID: ${{ secrets.ARM_TENANT_ID }}
+  ARM_SUBSCRIPTION_ID: ${{ secrets.ARM_SUBSCRIPTION_ID }}
+  # Provider variables (same SP)
+  TF_VAR_client_id: ${{ secrets.ARM_CLIENT_ID }}
+  TF_VAR_client_secret: ${{ secrets.ARM_CLIENT_SECRET }}
+  TF_VAR_tenant_id: ${{ secrets.ARM_TENANT_ID }}
+  TF_VAR_subscription_id: ${{ secrets.ARM_SUBSCRIPTION_ID }}
+
+jobs:
+  deploy:
+    name: Deploy to ${{ github.ref_name }}
+    runs-on: ubuntu-latest
+    environment: ${{ github.ref_name }}
+
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '15.5.1'
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Install dependencies
+        working-directory: ${{ env.APP_DIR }}
+        run: npm install
+
+      - name: Build application
+        working-directory: ${{ env.APP_DIR }}
+        run: npm run build
+        env:
+          CI: false
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.9.8
+          terraform_wrapper: false
+
+      - name: Terraform init (remote state per environment)
+        working-directory: ${{ env.TF_DIR }}
+        run: |
+          # Backend only in CI; local runs keep local state
+          cat > backend.tf <<'EOF'
+          terraform {
+            backend "azurerm" {}
+          }
+          EOF
+          terraform init \
+            -backend-config="resource_group_name=rg-tfstate" \
+            -backend-config="storage_account_name=stfullstackstates09" \
+            -backend-config="container_name=tfstate" \
+            -backend-config="key=rdicidr.${{ github.ref_name }}.tfstate"
+
+      - name: Terraform validate & plan
+        working-directory: ${{ env.TF_DIR }}
+        run: |
+          terraform validate
+          terraform plan -var-file=environments/${{ github.ref_name }}.tfvars -out=tfplan
+
+      - name: Terraform apply
+        working-directory: ${{ env.TF_DIR }}
+        run: terraform apply -auto-approve tfplan
+
+      - name: Read Terraform outputs
+        id: tf
+        working-directory: ${{ env.TF_DIR }}
+        run: |
+          echo "rg=$(terraform output -raw resource_group_name)" >> "$GITHUB_OUTPUT"
+          echo "storage=$(terraform output -raw storage_account_name)" >> "$GITHUB_OUTPUT"
+          echo "cdn_profile=$(terraform output -raw cdn_profile_name)" >> "$GITHUB_OUTPUT"
+          echo "cdn_endpoint=$(terraform output -raw cdn_endpoint_name)" >> "$GITHUB_OUTPUT"
+          echo "url=$(terraform output -raw cdn_endpoint_url)" >> "$GITHUB_OUTPUT"
+
+      - name: Azure login
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Upload build to $web container
+        run: |
+          KEY=$(az storage account keys list \
+            -g "${{ steps.tf.outputs.rg }}" \
+            -n "${{ steps.tf.outputs.storage }}" \
+            --query '[0].value' -o tsv)
+          az storage blob upload-batch \
+            --account-name "${{ steps.tf.outputs.storage }}" \
+            --account-key "$KEY" \
+            --destination '$web' \
+            --source "${{ env.APP_DIR }}/build" \
+            --overwrite
+
+      - name: Purge CDN cache
+        run: |
+          az afd endpoint purge \
+            -g "${{ steps.tf.outputs.rg }}" \
+            --profile-name "${{ steps.tf.outputs.cdn_profile }}" \
+            --endpoint-name "${{ steps.tf.outputs.cdn_endpoint }}" \
+            --content-paths '/*'
+
+      - name: Summary
+        run: |
+          {
+            echo "## Deployment — ${{ github.ref_name }}"
+            echo "- App URL: ${{ steps.tf.outputs.url }}"
+            echo "- Storage: ${{ steps.tf.outputs.storage }}"
+          } >> "$GITHUB_STEP_SUMMARY"

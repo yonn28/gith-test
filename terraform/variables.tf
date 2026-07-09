@@ -36,7 +36,7 @@ variable "environment" {
   description = "Target environment to provision (devel or stage)."
 
   validation {
-    condition     = contains(["devel", "stage"], var.environment)
+    condition     = contains(["devel", "stage", "master"], var.environment)
     error_message = "environment must be one of: devel, stage."
   }
 }
