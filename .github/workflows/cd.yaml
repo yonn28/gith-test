@@ -71,7 +71,11 @@ jobs:
         working-directory: ${{ env.TF_DIR }}
         run: |
           # Backend only in CI; local runs keep local state
-          echo 'terraform { backend "azurerm" {} }' > backend.tf
+          cat > backend.tf <<'EOF'
+          terraform {
+            backend "azurerm" {}
+          }
+          EOF
           terraform init \
             -backend-config="resource_group_name=rg-tfstate" \
             -backend-config="storage_account_name=stfullstackstates09" \
